@@ -56,11 +56,14 @@ export default {
 
   computed: {
     id () {
-      return this.vscrollData.simpleArray ? this.index : this.item[this.vscrollData.keyField]
+      if (this.vscrollData.simpleArray) return this.index
+      // eslint-disable-next-line no-prototype-builtins
+      if (this.vscrollData.keyField in this.item) return this.item[this.vscrollData.keyField]
+      throw new Error(`keyField '${this.vscrollData.keyField}' not found in your item. You should set a valid keyField prop on your Scroller`)
     },
 
     size () {
-      return (this.vscrollData.validSizes[this.id] && this.vscrollData.sizes[this.id]) || 0
+      return this.vscrollData.sizes[this.id] || 0
     },
 
     finalActive () {
@@ -71,9 +74,20 @@ export default {
   watch: {
     watchData: 'updateWatchData',
 
-    id () {
+    id (value, oldValue) {
+      this.$el.$_vs_id = this.id
       if (!this.size) {
         this.onDataUpdate()
+      }
+
+      if (this.$_sizeObserved) {
+        // In case the old item had the same size, it won't trigger the ResizeObserver
+        // since we are reusing the same DOM node
+        const oldSize = this.vscrollData.sizes[oldValue]
+        const size = this.vscrollData.sizes[value]
+        if (oldSize != null && oldSize !== size) {
+          this.applySize(oldSize)
+        }
       }
     },
 
@@ -120,7 +134,7 @@ export default {
   },
 
   mounted () {
-    if (this.vscrollData.active) {
+    if (this.finalActive) {
       this.updateSize()
       this.observeSize()
     }
@@ -146,8 +160,8 @@ export default {
     },
 
     updateWatchData () {
-      if (this.watchData) {
-        this.$_watchData = this.$watch('data', () => {
+      if (this.watchData && !this.vscrollResizeObserver) {
+        this.$_watchData = this.$watch('item', () => {
           this.onDataUpdate()
         }, {
           deep: true,
@@ -178,40 +192,49 @@ export default {
         if (this.id === id) {
           const width = this.$el.offsetWidth
           const height = this.$el.offsetHeight
-          this.applySize(width, height)
+          this.applyWidthHeight(width, height)
         }
         this.$_pendingSizeUpdate = null
       })
     },
 
-    applySize (width, height) {
-      const size = Math.round(this.vscrollParent.direction === 'vertical' ? height : width)
+    applyWidthHeight (width, height) {
+      const size = ~~(this.vscrollParent.direction === 'vertical' ? height : width)
       if (size && this.size !== size) {
-        if (this.vscrollParent.$_undefinedMap[this.id]) {
-          this.vscrollParent.$_undefinedSizes--
-          this.vscrollParent.$_undefinedMap[this.id] = undefined
-        }
-        this.vscrollData.sizes[this.id] = size
-        this.vscrollData.validSizes[this.id] = true
-        if (this.emitResize) this.$emit('resize', this.id)
+        this.applySize(size)
       }
+    },
+
+    applySize (size) {
+      if (this.vscrollParent.$_undefinedMap[this.id]) {
+        this.vscrollParent.$_undefinedSizes--
+        this.vscrollParent.$_undefinedMap[this.id] = undefined
+      }
+      this.vscrollData.sizes[this.id] = size
+      if (this.emitResize) this.$emit('resize', this.id)
     },
 
     observeSize () {
       if (!this.vscrollResizeObserver) return
-      this.vscrollResizeObserver.observe(this.$el.parentNode)
-      this.$el.parentNode.addEventListener('resize', this.onResize)
+      if (this.$_sizeObserved) return
+      this.vscrollResizeObserver.observe(this.$el)
+      this.$el.$_vs_id = this.id
+      this.$el.$_vs_onResize = this.onResize
+      this.$_sizeObserved = true
     },
 
     unobserveSize () {
       if (!this.vscrollResizeObserver) return
-      this.vscrollResizeObserver.unobserve(this.$el.parentNode)
-      this.$el.parentNode.removeEventListener('resize', this.onResize)
+      if (!this.$_sizeObserved) return
+      this.vscrollResizeObserver.unobserve(this.$el)
+      this.$el.$_vs_onResize = undefined
+      this.$_sizeObserved = false
     },
 
-    onResize (event) {
-      const { width, height } = event.detail.contentRect
-      this.applySize(width, height)
+    onResize (id, width, height) {
+      if (this.id === id) {
+        this.applyWidthHeight(width, height)
+      }
     },
   },
 

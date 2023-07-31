@@ -5,6 +5,8 @@
     :min-item-size="minItemSize"
     :direction="direction"
     key-field="id"
+    :list-tag="listTag"
+    :item-tag="itemTag"
     v-bind="$attrs"
     @resize="onScrollerResize"
     @visible="onScrollerVisible"
@@ -19,11 +21,20 @@
         }"
       />
     </template>
-    <template #before>
+    <template
+      v-if="$slots.before"
+      #before
+    >
       <slot name="before" />
     </template>
-    <template #after>
+    <template
+      v-if="$slots.after"
+      #after
+    >
       <slot name="after" />
+    </template>
+    <template #empty>
+      <slot name="empty" />
     </template>
   </RecycleScroller>
 </template>
@@ -43,19 +54,26 @@ export default {
   provide () {
     if (typeof ResizeObserver !== 'undefined') {
       this.$_resizeObserver = new ResizeObserver(entries => {
-        for (const entry of entries) {
-          if (entry.target) {
-            const event = new CustomEvent(
-              'resize',
-              {
-                detail: {
-                  contentRect: entry.contentRect,
-                },
-              },
-            )
-            entry.target.dispatchEvent(event)
+        requestAnimationFrame(() => {
+          if (!Array.isArray(entries)) {
+            return
           }
-        }
+          for (const entry of entries) {
+            if (entry.target && entry.target.$_vs_onResize) {
+              let width, height
+              if (entry.borderBoxSize) {
+                const resizeObserverSize = entry.borderBoxSize[0]
+                width = resizeObserverSize.inlineSize
+                height = resizeObserverSize.blockSize
+              } else {
+                // @TODO remove when contentRect is deprecated
+                width = entry.contentRect.width
+                height = entry.contentRect.height
+              }
+              entry.target.$_vs_onResize(entry.target.$_vs_id, width, height)
+            }
+          }
+        })
       })
     }
 
@@ -87,7 +105,6 @@ export default {
       vscrollData: {
         active: true,
         sizes: {},
-        validSizes: {},
         keyField: this.keyField,
         simpleArray: false,
       },
@@ -101,7 +118,8 @@ export default {
       const result = []
       const { items, keyField, simpleArray } = this
       const sizes = this.vscrollData.sizes
-      for (let i = 0; i < items.length; i++) {
+      const l = items.length
+      for (let i = 0; i < l; i++) {
         const item = items[i]
         const id = simpleArray ? i : item[keyField]
         let size = sizes[id]
@@ -120,7 +138,7 @@ export default {
 
   watch: {
     items () {
-      this.forceUpdate(false)
+      this.forceUpdate()
     },
 
     simpleArray: {
@@ -133,9 +151,33 @@ export default {
     direction (value) {
       this.forceUpdate(true)
     },
+
+    itemsWithSize (next, prev) {
+      const scrollTop = this.$el.scrollTop
+
+      // Calculate total diff between prev and next sizes
+      // over current scroll top. Then add it to scrollTop to
+      // avoid jumping the contents that the user is seeing.
+      let prevActiveTop = 0; let activeTop = 0
+      const length = Math.min(next.length, prev.length)
+      for (let i = 0; i < length; i++) {
+        if (prevActiveTop >= scrollTop) {
+          break
+        }
+        prevActiveTop += prev[i].size || this.minItemSize
+        activeTop += next[i].size || this.minItemSize
+      }
+      const offset = activeTop - prevActiveTop
+
+      if (offset === 0) {
+        return
+      }
+
+      this.$el.scrollTop += offset
+    },
   },
 
-  created () {
+  beforeCreate () {
     this.$_updates = []
     this.$_undefinedSizes = 0
     this.$_undefinedMap = {}
@@ -168,9 +210,9 @@ export default {
       this.$emit('visible')
     },
 
-    forceUpdate (clear = true) {
+    forceUpdate (clear = false) {
       if (clear || this.simpleArray) {
-        this.vscrollData.validSizes = {}
+        this.vscrollData.sizes = {}
       }
       this.$_events.emit('vscroll:update', { force: true })
     },
